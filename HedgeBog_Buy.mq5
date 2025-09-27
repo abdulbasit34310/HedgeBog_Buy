@@ -1,109 +1,67 @@
-#property copyright "ChatGPT Assistant"
-#property link      ""
-#property version   "1.00"
-#property strict
+// Requires `#include <Trade/Trade.mqh>#include <Trade/Trade.mqh>
+CTrade trade;
 
-input double lots = 0.1;            // Lot size for buy
-input int slippage = 10;             // Max allowed slippage in points
-
-// Called when new price tick arrives
-void OnTick()
+void OnStart()
 {
-    static bool order_sent = false;  // Track if order is already sent
-    
-    if (!order_sent)
+    string symbol = Symbol();
+    double volume = 0.1;
+    long   magic  = 54321;
+    double current_ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
+    double entry_price = current_ask - SymbolInfoDouble(symbol, SYMBOL_POINT) * 100; // 10 points below Ask
+
+    Print("Attempting to place BUY LIMIT pending order for ", volume, " lots on ", symbol, " at ", entry_price);
+
+    if(trade.BuyLimit(volume, entry_price, symbol, 0, 0, 0, magic))
     {
-        order_sent = SendMarketBuyOrder(lots, slippage);
-    }
-}
+        Print("Buy Limit order placed successfully.");
+        long order_ticket = trade.ResultOrder();
+        Print("Pending Order Ticket: ", order_ticket);
+        Print("Order is pending. Monitor OnTradeTransaction for state change to FILLED.");
+        Print("Once FILLED, look for a DEAL_TYPE_BUY with ORDER=", order_ticket, " and a Long Position on ", symbol);
 
-// Function to send market buy order
-bool SendMarketBuyOrder(double volume, int deviation)
-{
-    MqlTradeRequest request;
-    MqlTradeResult result;
-
-    ZeroMemory(request);
-    ZeroMemory(result);
-
-    request.action   = TRADE_ACTION_DEAL;                         // Market order execution
-    request.symbol   = _Symbol;
-    request.volume   = volume;
-    request.type     = ORDER_TYPE_BUY;
-    request.price    = SymbolInfoDouble(_Symbol, SYMBOL_ASK);    // Buy at ASK price
-    request.deviation= deviation;
-    request.magic    = 123456;                                    // EA magic number
-    request.comment  = "Market Buy Order";
-
-    if(!OrderSend(request, result))
-    {
-        Print("OrderSend() failed with error: ", GetLastError());
-        return false;
-    }
-    
-    // OrderSend returned true, check result retcode
-    if(result.retcode != TRADE_RETCODE_DONE)
-    {
-        Print("Trade request failed, retcode=", result.retcode);
-        return false;
-    }
-
-    Print("Market Buy Order sent successfully. Order Ticket: ", result.order);
-
-    // Now retrieve position details
-    if(PositionSelect(_Symbol))
-    {
-        ulong position_ticket = PositionGetTicket(0);
-        double position_volume = PositionGetDouble(POSITION_VOLUME);
-        double position_price = PositionGetDouble(POSITION_PRICE_OPEN);
-        Print("Position opened for symbol: ", _Symbol);
-        Print("Position Ticket: ", position_ticket);
-        Print("Position Volume: ", DoubleToString(position_volume, 2));
-        Print("Position Open Price: ", DoubleToString(position_price, _Digits));
     }
     else
     {
-        Print("PositionSelect failed - position not found.");
+        Print("Buy Limit order failed. Error: ", trade.ResultRetcode(), " (", trade.ResultRetcodeDescription(), ")");
     }
-
-    return true;
 }
 
-// OnTradeTransaction event handler - provides info about deals and orders
-void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest& request, const MqlTradeResult& result)
-{
-    // Log new deals
-    if(trans.type == TRADE_TRANSACTION_DEAL_ADD)
-    {
-        ulong deal_ticket = trans.deal;
-        if(deal_ticket > 0)
+ulong positionID = 12345; // Your position ticket number here
+
+void OnTradeTransaction(const MqlTradeTransaction &trans,
+                        const MqlTradeRequest &request,
+                        const MqlTradeResult &result)
+  {
+   if(trans.type == TRADE_TRANSACTION_POSITION_DELETE)
+     {
+      // Get the ticket of the position that was changed from the transaction
+      ulong changedPositionID = trans.position;
+
+      // Check if the changed position is the one we are monitoring
+      if(changedPositionID == positionID)
         {
-            double deal_volume = HistoryDealGetDouble(deal_ticket, DEAL_VOLUME);
-            double deal_price = HistoryDealGetDouble(deal_ticket, DEAL_PRICE);
-            ulong deal_position = HistoryDealGetInteger(deal_ticket, DEAL_POSITION_ID);
-            ENUM_DEAL_TYPE deal_type = (ENUM_DEAL_TYPE)HistoryDealGetInteger(deal_ticket, DEAL_TYPE);
-
-            Print("New deal executed: Ticket=", deal_ticket,
-                ", Type=", EnumToString(deal_type),
-                ", Volume=", DoubleToString(deal_volume, 2),
-                ", Price=", DoubleToString(deal_price, _Digits),
-                ", Position ID=", deal_position);
+         // Create a CPositionInfo object to get the current details
+         CPositionInfo pos;
+         if(pos.SelectByTicket(changedPositionID))
+           {
+            // If the volume is zero, the position is fully closed
+            if(pos.Volume() == 0)
+              {
+               Print("Position Completely Closed. Ticket: ", positionID);
+               // You can add any other cleanup logic here (e.g., reset flags, log final profit)
+              }
+            else
+              {
+               // Optional: Print a message for a partial close
+               Print("Position Partially Closed. Ticket: ", positionID, ", New Volume: ", pos.Volume());
+              }
+           }
+         else
+           {
+            // If SelectByTicket fails, the position likely no longer exists (is closed)
+            // This is a very strong indicator that it was closed.
+            Print("Position Completely Closed (Unable to select, it's gone). Ticket: ", positionID);
+           }
         }
-    }
-}
-
-// Utility function to convert ENUM_DEAL_TYPE to string
-string EnumToString(ENUM_DEAL_TYPE type)
-{
-    switch(type)
-    {
-        case DEAL_TYPE_BUY: return "Buy";
-        case DEAL_TYPE_SELL: return "Sell";
-        case DEAL_TYPE_BALANCE: return "Balance";
-        case DEAL_TYPE_CREDIT: return "Credit";
-        case DEAL_TYPE_CHARGE: return "Charge";
-        case DEAL_TYPE_CORRECTION: return "Correction";
-        case DEAL_TYPE_BONUS: return "Bonus";
-        default: return "Unknown";
-    }
-}
+     }
+  }
