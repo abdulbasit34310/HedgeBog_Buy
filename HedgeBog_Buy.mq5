@@ -1,67 +1,100 @@
-// Requires `#include <Trade/Trade.mqh>#include <Trade/Trade.mqh>
+#property copyright "Abdul Basit"
+#property link "https://www.mql5.com"
+#property version "1.00"
+#property strict
+
+#include <Trade\Trade.mqh>
+
 CTrade trade;
+CPositionInfo position;
 
-void OnStart()
+// Input parameters
+input double HedgePrice = 3335.0; // The price level to open/close the hedge
+input double Lots = 1;            // Volume in lots for the trade
+
+// Global variables
+bool hasOpenPosition = false;
+bool hasPendingOrder = false;
+string currentSymbol = Symbol();
+
+int OnInit()
 {
-    string symbol = Symbol();
-    double volume = 0.1;
-    long   magic  = 54321;
-    double current_ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
-    double entry_price = current_ask - SymbolInfoDouble(symbol, SYMBOL_POINT) * 100; // 10 points below Ask
-
-    Print("Attempting to place BUY LIMIT pending order for ", volume, " lots on ", symbol, " at ", entry_price);
-
-    if(trade.BuyLimit(volume, entry_price, symbol, 0, 0, 0, magic))
-    {
-        Print("Buy Limit order placed successfully.");
-        long order_ticket = trade.ResultOrder();
-        Print("Pending Order Ticket: ", order_ticket);
-        Print("Order is pending. Monitor OnTradeTransaction for state change to FILLED.");
-        Print("Once FILLED, look for a DEAL_TYPE_BUY with ORDER=", order_ticket, " and a Long Position on ", symbol);
-
-    }
-    else
-    {
-        Print("Buy Limit order failed. Error: ", trade.ResultRetcode(), " (", trade.ResultRetcodeDescription(), ")");
-    }
+   PrintFormat("Hedge Bot EA initialized:");
+   return (INIT_SUCCEEDED);
 }
 
-ulong positionID = 12345; // Your position ticket number here
+void OnDeinit(const int reason)
+{
+   Print("Hedge Bot EA deinitialized. Reason: ", reason);
+}
 
-void OnTradeTransaction(const MqlTradeTransaction &trans,
-                        const MqlTradeRequest &request,
-                        const MqlTradeResult &result)
-  {
-   if(trans.type == TRADE_TRANSACTION_POSITION_DELETE)
-     {
-      // Get the ticket of the position that was changed from the transaction
-      ulong changedPositionID = trans.position;
+void OnTick()
+{
+   double bidPrice = SymbolInfoDouble(currentSymbol, SYMBOL_BID);
+   double askPrice = SymbolInfoDouble(currentSymbol, SYMBOL_ASK);
 
-      // Check if the changed position is the one we are monitoring
-      if(changedPositionID == positionID)
-        {
-         // Create a CPositionInfo object to get the current details
-         CPositionInfo pos;
-         if(pos.SelectByTicket(changedPositionID))
-           {
-            // If the volume is zero, the position is fully closed
-            if(pos.Volume() == 0)
-              {
-               Print("Position Completely Closed. Ticket: ", positionID);
-               // You can add any other cleanup logic here (e.g., reset flags, log final profit)
-              }
-            else
-              {
-               // Optional: Print a message for a partial close
-               Print("Position Partially Closed. Ticket: ", positionID, ", New Volume: ", pos.Volume());
-              }
-           }
-         else
-           {
-            // If SelectByTicket fails, the position likely no longer exists (is closed)
-            // This is a very strong indicator that it was closed.
-            Print("Position Completely Closed (Unable to select, it's gone). Ticket: ", positionID);
-           }
-        }
-     }
-  }
+   // Check if we have an active position
+   Check_Open_Position();
+
+   // Main trading logic
+   if (!hasOpenPosition && !hasPendingOrder && bidPrice <= HedgePrice)
+   {
+     Buy_Stop();
+   }
+   else if (!hasOpenPosition && !hasPendingOrder && bidPrice >= HedgePrice)
+   {
+       Market_Buy(bidPrice);
+   }
+}
+
+void Check_Open_Position()
+{
+   hasOpenPosition = false;
+   // Check all open positions
+   for (int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if (position.SelectByIndex(i))
+      {
+         if (position.Symbol() == currentSymbol && position.PositionType() == POSITION_TYPE_BUY)
+         {
+            hasOpenPosition = true;
+            break;
+         }
+      }
+   }
+}
+
+void Market_Buy(double currentPrice)
+{
+   double point = SymbolInfoDouble(currentSymbol, SYMBOL_POINT);
+   int digits = (int)SymbolInfoInteger(currentSymbol, SYMBOL_DIGITS);
+
+   // Calculate SL: HedgePrice + 1 pip (above entry for Buy orders)
+   double stopLoss = NormalizeDouble(HedgePrice + point, digits);
+
+   // Place immediate Buy order at current market price WITH SL
+   if (trade.Buy(Lots, currentSymbol, 0, stopLoss, 0, "Market_Buy"))
+   {
+      hasPendingOrder = false;
+      PrintFormat("Market_Buy order placed at market price with SL %.5f, Deal: %d", stopLoss);
+   }
+   else
+   {
+      PrintFormat("Failed Market_Buy. Error: %d", GetLastError());
+   }
+}
+
+void Buy_Stop()
+{
+   // Place Buy stop order WITH stop loss
+   if (trade.BuyStop(Lots, HedgePrice, currentSymbol, 0, 0, ORDER_TIME_GTC, 0, "Buy_Stop"))
+   {
+      hasPendingOrder = true;
+      PrintFormat("Buy_Stop at %.5f",
+                  HedgePrice);
+   }
+   else
+   {
+      PrintFormat("Failed Buy_Stop. Error: %d", GetLastError());
+   }
+}
